@@ -1,0 +1,266 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+  IMAGE_NAME: architecture-agent
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 0: fast host checks. Seconds, so they give a fast signal before the
+  # multi-minute image stages.
+  quality:
+    name: Lint, format and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install
+      - run: uv sync --locked --dev
+
+      - name: Check formatting
+        run: uv run ruff format --check --diff .
+
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Type check
+        run: uv run mypy .
+
+      - name: Verify uv.lock is current
+        run: uv lock --check
+
+  # ---------------------------------------------------------------------------
+  # Stage 1: the contract. The MCP surface is a public API, so a schema change
+  # must fail here rather than in a client's logs.
+  contract:
+    name: MCP contract
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install
+      - run: uv sync --locked --dev
+
+      - name: Contract snapshot must match the code
+        run: uv run pytest tests/mcp -q
+
+      - name: Security boundary tests
+        run: uv run pytest -m security -q
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: build the image once. Later stages consume the exported artifact, so
+  # every gate runs against the exact image that would ship.
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: quality
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Derive tags
+        id: meta
+        run: |
+          set -euo pipefail
+          tag="${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME}"
+          elif [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tag="${REGISTRY}/${IMAGE_NAME}:latest"
+          fi
+          echo "tags=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and export
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          push: false
+          outputs: type=docker,dest=image.tar
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: the test suite inside the image. A host-only run cannot catch an image
+  # that is missing a system library or running as the wrong user.
+  test:
+    name: Tests in image
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: test
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha
+          build-args: |
+            PYTHON_VERSION=${{ matrix.python-version }}
+
+      - name: pytest, as the runtime user
+        run: docker run --rm ${{ env.IMAGE_NAME }}:test
+
+      - name: Export coverage
+        run: |
+          docker run --rm -v "$PWD:/out" --entrypoint python \
+            ${{ env.IMAGE_NAME }}:test \
+            -m pytest -q --cov=architecture_agent --cov-report=xml:/out/coverage-${{ matrix.python-version }}.xml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage-${{ matrix.python-version }}.xml
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Stage 4: does the image work, and is it safe to ship?
+  verify:
+    name: Verify image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Download the image
+        uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: .
+
+      - name: Load
+        run: docker load < image.tar
+
+      - name: Smoke, health and secret gates
+        run: ./infrastructure/deployment/verify-image.sh ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+
+      - name: Lint the Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+      - name: Scan the image for known vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Audit Python dependencies
+        run: |
+          docker run --rm --entrypoint sh \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}" \
+            -c 'pip install --no-cache-dir pip-audit==2.9.0 && \
+                uv export --no-emit-project --format requirements-txt -o /tmp/req.txt && \
+                pip-audit -r /tmp/req.txt --strict'
+
+  # ---------------------------------------------------------------------------
+  # Stage 5: publish. Only from main or a tag, only after every gate above.
+  publish:
+    name: Publish image
+    runs-on: ubuntu-latest
+    needs: [quality, contract, test, verify]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        run: |
+          set -euo pipefail
+          tag="${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME}"
+          else
+            tag="${REGISTRY}/${IMAGE_NAME}:latest"
+          fi
+          echo "tags=${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=Architecture Engineering Agent
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
+      - name: Record the digest
+        run: |
+          echo "Published ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" \
+            >> "$GITHUB_STEP_SUMMARY"

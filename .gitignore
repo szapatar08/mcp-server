@@ -1,0 +1,41 @@
+# Environment
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Knowledge and cache artifacts (local state, not source)
+.knowledge/
+.cache/
+*.sqlite3
+*.sqlite3-journal
+
+# Local Claude Code MCP config. Commit .mcp.json only when it holds no secrets;
+# using `claude mcp add -e KEY=value` writes the value into this file.
+.claude/settings.local.json
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Terraform / infrastructure state (never commit real state)
+infrastructure/terraform/**/*.tfstate
+infrastructure/terraform/**/*.tfstate.*
+*.tfvars
+!*.tfvars.example

@@ -1,0 +1,14 @@
+# hadolint configuration. `failure-threshold: warning` means warnings fail CI.
+failure-threshold: warning
+ignored:
+  # DL3008: apt versions are not pinned. Pinning them turns a routine security
+  # update into a rebuild that fails; the base image digest is what actually pins
+  # the supply chain, and CI rebuilds the image on every change anyway.
+  - DL3008
+  # DL3013: pip installs only the tooling (uv, pip-audit), never project
+  # dependencies. Those come from uv.lock via `uv sync --frozen`.
+  - DL3013
+  # DL3059: the consecutive RUNs are deliberate. One creates the runtime user, the
+  # next verifies the package imports and that dev dependencies are absent. Merging
+  # them would put the verification inside a layer invalidated by every user change.
+  - DL3059

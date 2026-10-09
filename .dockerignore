@@ -1,0 +1,49 @@
+# Keep the build context small and the image free of local state.
+# Anything excluded here cannot leak into an image layer.
+
+.git
+.github
+.gitignore
+.env
+.env.*
+!.env.example
+.mcp.json
+.claude
+
+# Local state: the knowledge database is a runtime volume, never baked in.
+.knowledge
+.cache
+*.sqlite3
+*.sqlite3-journal
+
+# Build artifacts and caches
+.venv
+venv
+dist
+build
+*.egg-info
+__pycache__
+**/__pycache__
+*.py[cod]
+
+# Tooling caches
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+.coverage.*
+coverage.xml
+htmlcov
+
+# Docs are not needed at runtime or in the test image: no test reads them.
+docs
+
+# Editor and OS noise
+.idea
+.vscode
+.DS_Store
+
+# Terraform state must never reach a layer
+infrastructure/terraform/**/*.tfstate
+infrastructure/terraform/**/*.tfstate.*
+*.tfvars

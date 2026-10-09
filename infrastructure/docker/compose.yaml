@@ -1,0 +1,57 @@
+# Local run of the Architecture Agent MCP server.
+#
+#   docker compose -f infrastructure/docker/compose.yaml up --build
+#
+# The service speaks HTTP by default because a container has no stdio peer. For
+# stdio, use the image directly:
+#
+#   docker run -i --rm architecture-agent:0.1.0
+
+name: architecture-agent
+
+services:
+  mcp:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime
+    image: architecture-agent:0.1.0
+    init: true
+    # Bind to loopback on the host. The server has no authentication, so do not
+    # publish this on a routable interface without putting a proxy in front of it.
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ARCH_AGENT_MCP__TRANSPORT: streamable-http
+      ARCH_AGENT_MCP__HOST: 0.0.0.0
+      ARCH_AGENT_MCP__PORT: "8000"
+      ARCH_AGENT_LOG_LEVEL: ${ARCH_AGENT_LOG_LEVEL:-INFO}
+      ARCH_AGENT_LOG_FORMAT: json
+      ARCH_AGENT_ENVIRONMENT: ${ARCH_AGENT_ENVIRONMENT:-development}
+      ARCH_AGENT_LLM__PROVIDER: ${ARCH_AGENT_LLM__PROVIDER:-anthropic}
+      ARCH_AGENT_LLM__MODEL: ${ARCH_AGENT_LLM__MODEL:-claude-sonnet-4-5}
+      # Passed through from your shell or .env. Never baked into the image.
+      ARCH_AGENT_LLM__API_KEY: ${ARCH_AGENT_LLM__API_KEY:-}
+      ARCH_AGENT_SEARCH__PROVIDER: ${ARCH_AGENT_SEARCH__PROVIDER:-duckduckgo}
+      # Restrict egress to authoritative sources in a shared environment.
+      ARCH_AGENT_SECURITY__ALLOWED_DOMAINS: ${ARCH_AGENT_SECURITY__ALLOWED_DOMAINS:-}
+    volumes:
+      # The knowledge base is disposable: delete this volume and re-ingest.
+      - knowledge:/data/knowledge
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/opt/venv/bin/python", "-m", "scripts.health_check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  knowledge:
