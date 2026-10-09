@@ -427,10 +427,11 @@ Dependencies point inwards: `domain` knows nothing, `application` depends on
 | [`docs/requirements.md`](docs/requirements.md) | Functional and non-functional requirements |
 | [`docs/architecture.md`](docs/architecture.md) | Layers, dependency rules, diagrams |
 | [`docs/roadmap.md`](docs/roadmap.md) | Milestones, current status and what is not verified |
-| [`infrastructure/deployment/README.md`](infrastructure/deployment/README.md) | Container deployment, reverse proxy, Kubernetes |
-| [`docs/adr/`](docs/adr/) | Architecture decision records |
+| [`docs/security.md`](docs/security.md) | Threat model, controls and deployment hardening |
 | [`docs/testing.md`](docs/testing.md) | Test strategy and tiers |
-| [`infrastructure/deployment/README.md`](infrastructure/deployment/README.md) | Container deployment, proxy config, Kubernetes manifest |
+| [`docs/adr/`](docs/adr/) | Architecture decision records |
+| [`infrastructure/deployment/README.md`](infrastructure/deployment/README.md) | Container deployment, reverse proxy, Kubernetes manifest |
+| [`coding-assistance/README.md`](coding-assistance/README.md) | AI-assisted development trace: agents, models and the full prompt log |
 
 ## License
 
